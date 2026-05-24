@@ -44,4 +44,45 @@ class ImmichRepository(
 
         images.shuffled(Random(System.currentTimeMillis()))
     }
+
+    suspend fun fetchSelectedAlbumSlideshowUrls(
+        context: Context,
+        useShuffle: Boolean,
+        pageSize: Int = 200
+    ): List<String> = withContext(Dispatchers.IO) {
+        val settings = ImmichSettingsStore.loadSlideshowSettings(context)
+        val albumIds = settings.selectedAlbumIds.toList()
+        if (albumIds.isEmpty()) {
+            return@withContext emptyList()
+        }
+
+        val config = ImmichSettingsStore.loadAuthConfig(context) ?: return@withContext emptyList()
+        val collected = mutableListOf<String>()
+
+        for (albumId in albumIds) {
+            val page = apiClient.getAlbumAssetsPage(
+                config = config,
+                albumId = albumId,
+                page = 0,
+                size = pageSize
+            )
+
+            collected.addAll(
+                page.items
+                    .filter { it.type.equals("IMAGE", ignoreCase = true) }
+                    .map { apiClient.buildOriginalUrl(config, it.id) }
+            )
+        }
+
+        val distinctUrls = collected.distinct()
+        if (!useShuffle || distinctUrls.size < 2) {
+            return@withContext distinctUrls
+        }
+
+        distinctUrls.shuffled(Random(System.currentTimeMillis()))
+    }
+
+    fun hasConfiguredAuth(context: Context): Boolean {
+        return ImmichSettingsStore.loadAuthConfig(context) != null
+    }
 }
