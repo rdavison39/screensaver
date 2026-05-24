@@ -41,7 +41,7 @@ class MyDreamService : DreamService() {
     @Volatile
     private var indexedImageUrls: List<String> = emptyList()
     @Volatile
-    private var fallbackReason: String = "Loading Google Photos..."
+    private var fallbackReason: String = "Loading Immich photos..."
     private var lastLatestSyncTimeMs = 0L
     private var lastExpansionSyncTimeMs = 0L
     @Volatile
@@ -172,66 +172,31 @@ class MyDreamService : DreamService() {
                 val immichSelection = ImmichSettingsStore.loadSlideshowSettings(this@MyDreamService)
                 val hasImmichConfigured = immichRepository.hasConfiguredAuth(this@MyDreamService)
 
-                if (hasImmichConfigured && immichSelection.selectedAlbumIds.isNotEmpty()) {
-                    val refreshedUrls = immichRepository.fetchSelectedAlbumSlideshowUrls(
-                        context = this@MyDreamService,
-                        useShuffle = immichSelection.shuffle
-                    )
-
-                    if (refreshedUrls.isNotEmpty()) {
-                        indexedImageUrls = refreshedUrls
-                        if (currentImageIndex >= indexedImageUrls.size) {
-                            currentImageIndex = 0
-                        }
-                        fallbackReason = ""
-                        return@launch
-                    }
-
-                    fallbackReason = "Immich returned no playable images from selected albums."
-                    return@launch
-                }
-
-                val selectedAlbumId = GooglePhotosRepository
-                    .getSelectedAlbum(this@MyDreamService)
-                    ?.id
-                    .orEmpty()
-
-                if (selectedAlbumId.isBlank()) {
+                if (!hasImmichConfigured) {
                     indexedImageUrls = emptyList()
-                    fallbackReason = "No Immich or Google album selected in app setup."
+                    fallbackReason = "Immich is not configured in app setup."
                     return@launch
                 }
 
-                val existingUrls = GooglePhotosRepository.getIndexedPhotoUrls(
-                    context = this@MyDreamService,
-                    albumId = selectedAlbumId
-                )
-
-                if (existingUrls.isNotEmpty()) {
-                    indexedImageUrls = existingUrls
+                if (immichSelection.selectedAlbumIds.isEmpty()) {
+                    indexedImageUrls = emptyList()
+                    fallbackReason = "No Immich albums selected in app setup."
+                    return@launch
                 }
 
-                val hasIndexedPhotos = GooglePhotosRepository.syncPhotoIndex(
+                val refreshedUrls = immichRepository.fetchSelectedAlbumSlideshowUrls(
                     context = this@MyDreamService,
-                    albumId = selectedAlbumId,
-                    includeLatestPage = includeLatestPage,
-                    additionalPages = additionalPages
+                    useShuffle = immichSelection.shuffle
                 )
 
-                val refreshedUrls = GooglePhotosRepository.getIndexedPhotoUrls(
-                    context = this@MyDreamService,
-                    albumId = selectedAlbumId
-                )
-
-                indexedImageUrls = refreshedUrls.shuffled()
+                indexedImageUrls = refreshedUrls
                 if (currentImageIndex >= indexedImageUrls.size) {
                     currentImageIndex = 0
                 }
-                fallbackReason = if (hasIndexedPhotos && refreshedUrls.isNotEmpty()) {
+                fallbackReason = if (refreshedUrls.isNotEmpty()) {
                     ""
                 } else {
-                    GooglePhotosRepository.getLastError(this@MyDreamService)
-                        ?: "No indexed photos available yet for this album."
+                    "Immich returned no playable images from selected albums."
                 }
 
                 if (includeLatestPage || force) {
@@ -245,7 +210,7 @@ class MyDreamService : DreamService() {
     }
 
     private fun intervalSecondsForSlide(): Long {
-        return GooglePhotosRepository.getSlideshowIntervalSeconds(this)
+        return ImmichSettingsStore.loadSlideshowSettings(this).intervalSeconds
             .coerceAtLeast(1)
             .toLong() * 1000L
     }
