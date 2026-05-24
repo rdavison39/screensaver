@@ -12,6 +12,7 @@ import android.text.InputType
 import android.util.TypedValue
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -20,6 +21,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import ca.thedavisons.screensaver.immich.ImmichAuthConfig
+import ca.thedavisons.screensaver.immich.ImmichAlbum
 import ca.thedavisons.screensaver.immich.ImmichRepository
 import ca.thedavisons.screensaver.immich.ImmichSettingsStore
 import coil.load
@@ -52,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var immichStatusText: TextView
     private lateinit var immichServerUrlInput: EditText
     private lateinit var immichApiKeyInput: EditText
+    private lateinit var immichAlbumListContainer: LinearLayout
     private lateinit var startPairingButton: Button
 
     private val isTvDevice: Boolean by lazy {
@@ -64,6 +67,7 @@ class MainActivity : AppCompatActivity() {
     private var pairingPollJob: Job? = null
 
     private val immichRepository = ImmichRepository()
+    private val immichAlbumCheckboxes = linkedMapOf<String, CheckBox>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -129,6 +133,21 @@ class MainActivity : AppCompatActivity() {
         val testImmichConnectionButton = Button(this).apply {
             text = "Test Immich Connection"
             setOnClickListener { testImmichConnection() }
+        }
+
+        val loadImmichAlbumsButton = Button(this).apply {
+            text = "Load Immich Albums"
+            setOnClickListener { loadImmichAlbums() }
+        }
+
+        val saveImmichAlbumSelectionButton = Button(this).apply {
+            text = "Save Selected Immich Albums"
+            setOnClickListener { saveSelectedImmichAlbums() }
+        }
+
+        immichAlbumListContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
         }
 
         statusText = TextView(this).apply {
@@ -299,6 +318,9 @@ class MainActivity : AppCompatActivity() {
         content.addView(immichApiKeyInput)
         content.addView(saveImmichSettingsButton)
         content.addView(testImmichConnectionButton)
+        content.addView(loadImmichAlbumsButton)
+        content.addView(saveImmichAlbumSelectionButton)
+        content.addView(immichAlbumListContainer)
         content.addView(TextView(this).apply { text = "\n" })
         content.addView(statusText)
         content.addView(albumText)
@@ -387,6 +409,8 @@ class MainActivity : AppCompatActivity() {
         if (pairingStateText.text.isNullOrBlank()) {
             pairingStateText.text = "Pairing status: idle"
         }
+
+        restoreImmichAlbumSelectionState()
     }
 
     private fun saveImmichSettings(): Boolean {
@@ -420,6 +444,75 @@ class MainActivity : AppCompatActivity() {
                 "Immich: connection failed"
             }
         }
+    }
+
+    private fun loadImmichAlbums() {
+        if (!saveImmichSettings()) {
+            return
+        }
+
+        lifecycleScope.launch {
+            immichStatusText.text = "Immich: loading albums..."
+            val albums = immichRepository.fetchAlbums(this@MainActivity)
+            renderImmichAlbumPicker(albums)
+
+            immichStatusText.text = if (albums.isEmpty()) {
+                "Immich: no albums found"
+            } else {
+                "Immich: loaded ${albums.size} album(s)"
+            }
+        }
+    }
+
+    private fun renderImmichAlbumPicker(albums: List<ImmichAlbum>) {
+        immichAlbumListContainer.removeAllViews()
+        immichAlbumCheckboxes.clear()
+
+        if (albums.isEmpty()) {
+            immichAlbumListContainer.addView(TextView(this).apply {
+                text = "No Immich albums to display"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            })
+            return
+        }
+
+        val selected = ImmichSettingsStore.loadSlideshowSettings(this).selectedAlbumIds
+
+        albums.sortedBy { it.albumName.lowercase() }.forEach { album ->
+            val checkbox = CheckBox(this).apply {
+                text = "${album.albumName} (${album.assetCount})"
+                isChecked = selected.contains(album.id)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            }
+            immichAlbumCheckboxes[album.id] = checkbox
+            immichAlbumListContainer.addView(checkbox)
+        }
+    }
+
+    private fun restoreImmichAlbumSelectionState() {
+        if (immichAlbumCheckboxes.isEmpty()) {
+            return
+        }
+
+        val selected = ImmichSettingsStore.loadSlideshowSettings(this).selectedAlbumIds
+        immichAlbumCheckboxes.forEach { (albumId, checkbox) ->
+            checkbox.isChecked = selected.contains(albumId)
+        }
+    }
+
+    private fun saveSelectedImmichAlbums() {
+        val selectedIds = immichAlbumCheckboxes
+            .filterValues { it.isChecked }
+            .keys
+            .toSet()
+
+        val existing = ImmichSettingsStore.loadSlideshowSettings(this)
+        ImmichSettingsStore.saveSlideshowSettings(
+            context = this,
+            settings = existing.copy(selectedAlbumIds = selectedIds)
+        )
+
+        immichStatusText.text = "Immich: saved ${selectedIds.size} selected album(s)"
     }
 
     private fun startPairingSession() {
