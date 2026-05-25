@@ -9,6 +9,12 @@ class ImmichRepository(
     private val apiClient: ImmichApiClient = ImmichApiClient()
 ) {
 
+    suspend fun testConnection(context: Context): ImmichPingResult {
+        val config = ImmichSettingsStore.loadAuthConfig(context)
+            ?: return ImmichPingResult(false, "Immich settings are not configured")
+        return apiClient.pingWithDetails(config)
+    }
+
     suspend fun isConfiguredAndReachable(context: Context): Boolean {
         val config = ImmichSettingsStore.loadAuthConfig(context) ?: return false
         return apiClient.ping(config)
@@ -17,6 +23,12 @@ class ImmichRepository(
     suspend fun fetchAlbums(context: Context): List<ImmichAlbum> {
         val config = ImmichSettingsStore.loadAuthConfig(context) ?: return emptyList()
         return apiClient.getAlbums(config)
+    }
+
+    suspend fun fetchAlbumsDetailed(context: Context): ImmichAlbumsResult {
+        val config = ImmichSettingsStore.loadAuthConfig(context)
+            ?: return ImmichAlbumsResult(emptyList(), "Immich settings are not configured")
+        return apiClient.getAlbumsWithDetails(config)
     }
 
     suspend fun fetchSlideshowUrls(

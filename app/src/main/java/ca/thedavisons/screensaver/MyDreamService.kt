@@ -2,11 +2,14 @@ package ca.thedavisons.screensaver
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.RectF
 import android.view.animation.LinearInterpolator
 import android.os.Handler
 import android.os.Looper
 import android.service.dreams.DreamService
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -16,6 +19,7 @@ import android.widget.TextView
 import coil.load
 import ca.thedavisons.screensaver.immich.ImmichRepository
 import ca.thedavisons.screensaver.immich.ImmichSettingsStore
+import ca.thedavisons.screensaver.immich.SlideshowTransitionMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,7 +29,12 @@ import kotlin.random.Random
 
 class MyDreamService : DreamService() {
 
-    private lateinit var imageView: ImageView
+    private companion object {
+        const val TAG = "MyDreamService"
+    }
+
+    private lateinit var primaryImageView: ImageView
+    private lateinit var secondaryImageView: ImageView
     private lateinit var fallbackBanner: TextView
 
     private val handler = Handler(Looper.getMainLooper())
@@ -44,48 +53,74 @@ class MyDreamService : DreamService() {
     private var fallbackReason: String = "Loading Immich photos..."
     private var lastLatestSyncTimeMs = 0L
     private var lastExpansionSyncTimeMs = 0L
+    private var lastEmptyRetryTimeMs = 0L
     @Volatile
     private var syncInProgress = false
-    private var currentAnimatorRunning = false
+    private var showingPrimaryImage = true
 
     private val immichRepository = ImmichRepository()
 
     private val slideshowRunnable = object : Runnable {
 
         override fun run() {
-            maybeRefreshRemotePhotos()
+            val intervalMs = intervalSecondsForSlide()
 
-            val activeRemoteImages = indexedImageUrls
+            try {
+                Log.d(TAG, "Frame tick: idx=$currentImageIndex remoteCount=${indexedImageUrls.size} intervalMs=$intervalMs")
+                maybeRefreshRemotePhotos()
 
-            if (activeRemoteImages.isNotEmpty()) {
-                fallbackBanner.visibility = View.GONE
-                val imageUrl = activeRemoteImages[currentImageIndex % activeRemoteImages.size]
-                imageView.load(imageUrl)
-                startPhotoMotion(intervalSecondsForSlide())
-            } else {
+                val activeRemoteImages = indexedImageUrls
+
+                if (activeRemoteImages.isNotEmpty()) {
+                    fallbackBanner.visibility = View.GONE
+                    val imageUrl = activeRemoteImages[currentImageIndex % activeRemoteImages.size]
+                    val companionUrl = if (activeRemoteImages.size > 1) {
+                        activeRemoteImages[(currentImageIndex + 1) % activeRemoteImages.size]
+                    } else {
+                        null
+                    }
+                    val fallbackResId = fallbackImages[currentImageIndex % fallbackImages.size]
+                    val apiKey = ImmichSettingsStore.loadAuthConfig(this@MyDreamService)?.apiKey.orEmpty()
+                    displayRemoteImageWithTransition(
+                        imageUrl = imageUrl,
+                        companionUrl = companionUrl,
+                        fallbackResId = fallbackResId,
+                        apiKey = apiKey,
+                        intervalMs = intervalMs
+                    )
+                } else {
+                    fallbackBanner.visibility = View.VISIBLE
+                    fallbackBanner.text = "FALLBACK MODE\nReason: $fallbackReason"
+                    val fallbackResId = fallbackImages[currentImageIndex % fallbackImages.size]
+                    Log.d(TAG, "Showing fallback image index=${currentImageIndex % fallbackImages.size} resId=$fallbackResId reason=$fallbackReason")
+                    displayFallbackImageWithTransition(
+                        fallbackResId = fallbackResId,
+                        intervalMs = intervalMs
+                    )
+                }
+
+                currentImageIndex += 1
+            } catch (t: Throwable) {
+                Log.e(TAG, "Slideshow frame failed", t)
                 fallbackBanner.visibility = View.VISIBLE
-                fallbackBanner.text = "FALLBACK MODE\nReason: $fallbackReason"
-                val bitmap = decodeScaledBitmap(fallbackImages[currentImageIndex % fallbackImages.size])
-                imageView.setImageBitmap(bitmap)
+                fallbackBanner.text = "FALLBACK MODE\nReason: ${t.message ?: fallbackReason}"
+                currentImageIndex += 1
+            } finally {
+                handler.postDelayed(this, intervalMs)
             }
-
-            currentImageIndex += 1
-
-            handler.postDelayed(this, intervalSecondsForSlide())
         }
     }
 
     override fun onAttachedToWindow() {
 
         super.onAttachedToWindow()
+        Log.d(TAG, "onAttachedToWindow")
 
         isInteractive = false
         isFullscreen = true
 
-        imageView = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(Color.BLACK)
-        }
+        primaryImageView = newSlideImageView()
+        secondaryImageView = newSlideImageView().apply { alpha = 0f }
 
         fallbackBanner = TextView(this).apply {
             setTextColor(Color.WHITE)
@@ -99,7 +134,14 @@ class MyDreamService : DreamService() {
         val container = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             addView(
-                imageView,
+                primaryImageView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+            addView(
+                secondaryImageView,
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT
@@ -128,6 +170,7 @@ class MyDreamService : DreamService() {
     override fun onDreamingStopped() {
 
         super.onDreamingStopped()
+        Log.d(TAG, "onDreamingStopped")
 
         handler.removeCallbacks(slideshowRunnable)
         serviceScope.cancel()
@@ -135,8 +178,21 @@ class MyDreamService : DreamService() {
 
     private fun maybeRefreshRemotePhotos() {
         val now = System.currentTimeMillis()
+        val emptyRetryIntervalMs = 30L * 1000L
         val latestRefreshIntervalMs = 60L * 60L * 1000L
         val expansionIntervalMs = 5L * 60L * 1000L
+
+        if (indexedImageUrls.isEmpty()) {
+            if (now - lastEmptyRetryTimeMs >= emptyRetryIntervalMs) {
+                lastEmptyRetryTimeMs = now
+                refreshRemotePhotos(
+                    includeLatestPage = true,
+                    additionalPages = 2,
+                    force = false
+                )
+            }
+            return
+        }
 
         if (now - lastLatestSyncTimeMs >= latestRefreshIntervalMs) {
             refreshRemotePhotos(
@@ -190,7 +246,7 @@ class MyDreamService : DreamService() {
                 )
 
                 indexedImageUrls = refreshedUrls
-                if (currentImageIndex >= indexedImageUrls.size) {
+                if (indexedImageUrls.isNotEmpty() && currentImageIndex >= indexedImageUrls.size) {
                     currentImageIndex = 0
                 }
                 fallbackReason = if (refreshedUrls.isNotEmpty()) {
@@ -199,10 +255,16 @@ class MyDreamService : DreamService() {
                     "Immich returned no playable images from selected albums."
                 }
 
-                if (includeLatestPage || force) {
-                    lastLatestSyncTimeMs = System.currentTimeMillis()
+                if (refreshedUrls.isNotEmpty()) {
+                    if (includeLatestPage || force) {
+                        lastLatestSyncTimeMs = System.currentTimeMillis()
+                    }
+                    lastExpansionSyncTimeMs = System.currentTimeMillis()
+                    lastEmptyRetryTimeMs = System.currentTimeMillis()
                 }
-                lastExpansionSyncTimeMs = System.currentTimeMillis()
+            } catch (t: Throwable) {
+                indexedImageUrls = emptyList()
+                fallbackReason = "Immich refresh failed: ${t.message ?: "unknown error"}"
             } finally {
                 syncInProgress = false
             }
@@ -215,13 +277,427 @@ class MyDreamService : DreamService() {
             .toLong() * 1000L
     }
 
-    private fun startPhotoMotion(durationMs: Long) {
-        currentAnimatorRunning = false
-        imageView.animate().cancel()
-        imageView.scaleX = 1f
-        imageView.scaleY = 1f
-        imageView.translationX = 0f
-        imageView.translationY = 0f
+    private fun newSlideImageView(): ImageView {
+        return ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(Color.BLACK)
+            alpha = 1f
+        }
+    }
+
+    private fun activeImageView(): ImageView {
+        return if (showingPrimaryImage) primaryImageView else secondaryImageView
+    }
+
+    private fun inactiveImageView(): ImageView {
+        return if (showingPrimaryImage) secondaryImageView else primaryImageView
+    }
+
+    private fun transitionDurationMs(intervalMs: Long): Long {
+        return (intervalMs / 4L).coerceIn(400L, 1500L)
+    }
+
+    private fun transitionModeForSlide(): SlideshowTransitionMode {
+        val enabledTransitions = ImmichSettingsStore.loadSlideshowSettings(this).enabledTransitions
+            .ifEmpty { SlideshowTransitionMode.values().toSet() }
+
+        return enabledTransitions.random()
+    }
+
+    private fun displayRemoteImageWithTransition(
+        imageUrl: String,
+        companionUrl: String?,
+        fallbackResId: Int,
+        apiKey: String,
+        intervalMs: Long
+    ) {
+        val nextView = inactiveImageView()
+        val previousView = activeImageView()
+        val fadeDuration = transitionDurationMs(intervalMs)
+
+        nextView.animate().cancel()
+        previousView.animate().cancel()
+        nextView.alpha = 0f
+
+        // Always transition on schedule, even if remote image loading is slow.
+        nextView.setImageResource(fallbackResId)
+        runTransition(previousView, nextView, fadeDuration, intervalMs)
+
+        if (apiKey.isNotBlank()) {
+            nextView.load(imageUrl) {
+                addHeader("x-api-key", apiKey)
+                listener(onSuccess = { _, result ->
+                    val primaryDrawable = result.drawable
+                    nextView.setImageDrawable(primaryDrawable)
+                    if (shouldUseSideBySide(primaryDrawable) && !companionUrl.isNullOrBlank() && companionUrl != imageUrl) {
+                        loadCompanionIntoView(
+                            companionUrl = companionUrl,
+                            apiKey = apiKey,
+                            primaryDrawable = primaryDrawable,
+                            targetView = nextView
+                        )
+                    }
+                }, onError = { _, errorResult ->
+                    fallbackReason = "Image load failed: ${errorResult.throwable.message ?: "unknown"}"
+                    fallbackBanner.visibility = View.VISIBLE
+                })
+            }
+        } else {
+            nextView.load(imageUrl) {
+                listener(onSuccess = { _, result ->
+                    val primaryDrawable = result.drawable
+                    nextView.setImageDrawable(primaryDrawable)
+                    if (shouldUseSideBySide(primaryDrawable) && !companionUrl.isNullOrBlank() && companionUrl != imageUrl) {
+                        loadCompanionIntoView(
+                            companionUrl = companionUrl,
+                            apiKey = apiKey,
+                            primaryDrawable = primaryDrawable,
+                            targetView = nextView
+                        )
+                    }
+                }, onError = { _, errorResult ->
+                    fallbackReason = "Image load failed: ${errorResult.throwable.message ?: "unknown"}"
+                    fallbackBanner.visibility = View.VISIBLE
+                })
+            }
+        }
+    }
+
+    private fun shouldUseSideBySide(primaryDrawable: android.graphics.drawable.Drawable): Boolean {
+        val width = primaryDrawable.intrinsicWidth
+        val height = primaryDrawable.intrinsicHeight
+        if (width <= 0 || height <= 0) {
+            return false
+        }
+
+        val photoAspect = width.toFloat() / height.toFloat()
+        val screenAspect = resources.displayMetrics.widthPixels.toFloat() /
+            resources.displayMetrics.heightPixels.toFloat()
+
+        return photoAspect < (screenAspect * 0.72f)
+    }
+
+    private fun loadCompanionIntoView(
+        companionUrl: String,
+        apiKey: String,
+        primaryDrawable: android.graphics.drawable.Drawable,
+        targetView: ImageView
+    ) {
+        val scratchView = ImageView(this)
+
+        if (apiKey.isNotBlank()) {
+            scratchView.load(companionUrl) {
+                addHeader("x-api-key", apiKey)
+                listener(onSuccess = { _, companionResult ->
+                    val combined = composeSideBySideBitmap(primaryDrawable, companionResult.drawable)
+                    if (combined != null) {
+                        targetView.setImageBitmap(combined)
+                    } else {
+                        targetView.setImageDrawable(primaryDrawable)
+                    }
+                }, onError = { _, _ ->
+                    targetView.setImageDrawable(primaryDrawable)
+                })
+            }
+        } else {
+            scratchView.load(companionUrl) {
+                listener(onSuccess = { _, companionResult ->
+                    val combined = composeSideBySideBitmap(primaryDrawable, companionResult.drawable)
+                    if (combined != null) {
+                        targetView.setImageBitmap(combined)
+                    } else {
+                        targetView.setImageDrawable(primaryDrawable)
+                    }
+                }, onError = { _, _ ->
+                    targetView.setImageDrawable(primaryDrawable)
+                })
+            }
+        }
+    }
+
+    private fun composeSideBySideBitmap(
+        leftDrawable: android.graphics.drawable.Drawable,
+        rightDrawable: android.graphics.drawable.Drawable
+    ): Bitmap? {
+        val canvasWidth = resources.displayMetrics.widthPixels
+        val canvasHeight = resources.displayMetrics.heightPixels
+        if (canvasWidth <= 0 || canvasHeight <= 0) {
+            return null
+        }
+
+        val leftBitmap = drawableToBitmap(leftDrawable) ?: return null
+        val rightBitmap = drawableToBitmap(rightDrawable) ?: return null
+
+        val output = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        canvas.drawColor(Color.BLACK)
+
+        val leftRect = RectF(0f, 0f, canvasWidth / 2f, canvasHeight.toFloat())
+        val rightRect = RectF(canvasWidth / 2f, 0f, canvasWidth.toFloat(), canvasHeight.toFloat())
+
+        drawCenterCrop(canvas, leftBitmap, leftRect)
+        drawCenterCrop(canvas, rightBitmap, rightRect)
+
+        return output
+    }
+
+    private fun drawableToBitmap(drawable: android.graphics.drawable.Drawable): Bitmap? {
+        if (drawable is android.graphics.drawable.BitmapDrawable) {
+            return drawable.bitmap
+        }
+
+        val width = drawable.intrinsicWidth
+        val height = drawable.intrinsicHeight
+        if (width <= 0 || height <= 0) {
+            return null
+        }
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, width, height)
+        drawable.draw(canvas)
+        return bitmap
+    }
+
+    private fun drawCenterCrop(canvas: Canvas, bitmap: Bitmap, dst: RectF) {
+        val srcWidth = bitmap.width.toFloat()
+        val srcHeight = bitmap.height.toFloat()
+        if (srcWidth <= 0f || srcHeight <= 0f) {
+            return
+        }
+
+        val scale = maxOf(dst.width() / srcWidth, dst.height() / srcHeight)
+        val scaledWidth = srcWidth * scale
+        val scaledHeight = srcHeight * scale
+        val left = dst.left + (dst.width() - scaledWidth) / 2f
+        val top = dst.top + (dst.height() - scaledHeight) / 2f
+        val fitted = RectF(left, top, left + scaledWidth, top + scaledHeight)
+
+        canvas.drawBitmap(bitmap, null, fitted, null)
+    }
+
+    private fun displayFallbackImageWithTransition(fallbackResId: Int, intervalMs: Long) {
+        val nextView = inactiveImageView()
+        val previousView = activeImageView()
+        val fadeDuration = transitionDurationMs(intervalMs)
+
+        nextView.setImageResource(fallbackResId)
+        nextView.alpha = 0f
+        runTransition(previousView, nextView, fadeDuration, intervalMs)
+    }
+
+    private fun runTransition(
+        previousView: ImageView,
+        nextView: ImageView,
+        transitionDurationMs: Long,
+        intervalMs: Long
+    ) {
+        nextView.animate().cancel()
+        previousView.animate().cancel()
+
+        resetTransitionState(previousView, 1f)
+        resetTransitionState(nextView, 0f)
+
+        when (transitionModeForSlide()) {
+            SlideshowTransitionMode.CROSSFADE -> {
+                nextView.animate()
+                    .alpha(1f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .alpha(0f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+
+            SlideshowTransitionMode.SLIDE_LEFT -> {
+                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+                nextView.translationX = -screenWidth * 0.25f
+
+                nextView.animate()
+                    .alpha(1f)
+                    .translationX(0f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .alpha(0f)
+                    .translationX(screenWidth * 0.25f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+
+            SlideshowTransitionMode.SLIDE_RIGHT -> {
+                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+                nextView.translationX = screenWidth * 0.25f
+
+                nextView.animate()
+                    .alpha(1f)
+                    .translationX(0f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .alpha(0f)
+                    .translationX(-screenWidth * 0.25f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+
+            SlideshowTransitionMode.SLIDE_UP -> {
+                val screenHeight = resources.displayMetrics.heightPixels.toFloat()
+                nextView.translationY = screenHeight * 0.25f
+
+                nextView.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .alpha(0f)
+                    .translationY(-screenHeight * 0.25f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+
+            SlideshowTransitionMode.SLIDE_DOWN -> {
+                val screenHeight = resources.displayMetrics.heightPixels.toFloat()
+                nextView.translationY = -screenHeight * 0.25f
+
+                nextView.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .alpha(0f)
+                    .translationY(screenHeight * 0.25f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+
+            SlideshowTransitionMode.CENTER_EXPAND -> {
+                nextView.scaleX = 0.82f
+                nextView.scaleY = 0.82f
+
+                nextView.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .alpha(0f)
+                    .scaleX(1.08f)
+                    .scaleY(1.08f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+
+            SlideshowTransitionMode.PUSH_LEFT -> {
+                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+                nextView.translationX = screenWidth * 0.40f
+                nextView.alpha = 1f
+
+                nextView.animate()
+                    .translationX(0f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .translationX(-screenWidth * 0.40f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+
+            SlideshowTransitionMode.PUSH_RIGHT -> {
+                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+                nextView.translationX = -screenWidth * 0.40f
+                nextView.alpha = 1f
+
+                nextView.animate()
+                    .translationX(0f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .translationX(screenWidth * 0.40f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+
+            SlideshowTransitionMode.ZOOM_FADE -> {
+                nextView.scaleX = 1.12f
+                nextView.scaleY = 1.12f
+
+                nextView.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .start()
+
+                previousView.animate()
+                    .alpha(0f)
+                    .scaleX(0.92f)
+                    .scaleY(0.92f)
+                    .setDuration(transitionDurationMs)
+                    .setInterpolator(LinearInterpolator())
+                    .withEndAction { finishTransition(intervalMs) }
+                    .start()
+            }
+        }
+    }
+
+    private fun resetTransitionState(view: ImageView, alpha: Float) {
+        view.alpha = alpha
+        view.translationX = 0f
+        view.translationY = 0f
+        view.scaleX = 1f
+        view.scaleY = 1f
+    }
+
+    private fun finishTransition(intervalMs: Long) {
+        showingPrimaryImage = !showingPrimaryImage
+        resetTransitionState(inactiveImageView(), 0f)
+        startPhotoMotionOnView(activeImageView(), intervalMs)
+    }
+
+    private fun startPhotoMotionOnView(targetView: ImageView, durationMs: Long) {
+        targetView.animate().cancel()
+        targetView.scaleX = 1f
+        targetView.scaleY = 1f
+        targetView.translationX = 0f
+        targetView.translationY = 0f
 
         val maxTranslationX = resources.displayMetrics.widthPixels * 0.035f
         val maxTranslationY = resources.displayMetrics.heightPixels * 0.035f
@@ -229,7 +705,7 @@ class MyDreamService : DreamService() {
         val targetTranslationX = (Random.nextFloat() * 2f - 1f) * maxTranslationX
         val targetTranslationY = (Random.nextFloat() * 2f - 1f) * maxTranslationY
 
-        imageView.animate()
+        targetView.animate()
             .scaleX(targetScale)
             .scaleY(targetScale)
             .translationX(targetTranslationX)

@@ -17,6 +17,7 @@ import ca.thedavisons.screensaver.immich.ImmichAuthConfig
 import ca.thedavisons.screensaver.immich.ImmichAlbum
 import ca.thedavisons.screensaver.immich.ImmichRepository
 import ca.thedavisons.screensaver.immich.ImmichSettingsStore
+import ca.thedavisons.screensaver.immich.SlideshowTransitionMode
 import coil.load
 import kotlinx.coroutines.launch
 
@@ -39,6 +40,7 @@ class MainActivity : AppCompatActivity() {
 
     private val immichRepository = ImmichRepository()
     private val immichAlbumCheckboxes = linkedMapOf<String, CheckBox>()
+    private val transitionModeCheckboxes = linkedMapOf<SlideshowTransitionMode, CheckBox>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -160,7 +162,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(6), 0, dp(6))
         }
 
-        listOf(5, 10, 20, 30, 60).forEach { seconds ->
+        listOf(5, 8, 11, 15, 20).forEach { seconds ->
             val button = Button(this).apply {
                 text = "${seconds}s"
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -171,6 +173,57 @@ class MainActivity : AppCompatActivity() {
             intervalButtons.addView(button)
         }
 
+        val transitionLabel = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            text = "Transitions to use"
+        }
+
+        val transitionHint = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            text = "The screensaver randomly uses the checked transitions"
+        }
+
+        val transitionButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+        }
+
+        val transitionBulkButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(4), 0, dp(4))
+        }
+
+        val selectAllTransitionsButton = Button(this).apply {
+            text = "Select All"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
+            setOnClickListener { selectAllTransitions() }
+        }
+
+        val clearAllTransitionsButton = Button(this).apply {
+            text = "Clear All"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { clearAllTransitions() }
+        }
+
+        transitionBulkButtons.addView(selectAllTransitionsButton)
+        transitionBulkButtons.addView(clearAllTransitionsButton)
+
+        val selectedTransitions = ImmichSettingsStore.loadSlideshowSettings(this).enabledTransitions
+        SlideshowTransitionMode.values().forEach { mode ->
+            val checkbox = CheckBox(this).apply {
+                text = mode.displayName
+                isChecked = selectedTransitions.contains(mode)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setOnCheckedChangeListener { _, _ ->
+                    persistSelectedTransitions(showStatus = true)
+                }
+            }
+            transitionModeCheckboxes[mode] = checkbox
+            transitionButtons.addView(checkbox)
+        }
+
         val clearButton = Button(this).apply {
             text = "Clear Immich Setup"
             setOnClickListener {
@@ -178,10 +231,12 @@ class MainActivity : AppCompatActivity() {
                 ImmichSettingsStore.saveSlideshowSettings(
                     context = this@MainActivity,
                     settings = ImmichSettingsStore.loadSlideshowSettings(this@MainActivity).copy(
-                        selectedAlbumIds = emptySet()
+                        selectedAlbumIds = emptySet(),
+                        enabledTransitions = SlideshowTransitionMode.values().toSet()
                     )
                 )
                 immichAlbumCheckboxes.values.forEach { it.isChecked = false }
+                transitionModeCheckboxes.values.forEach { it.isChecked = true }
                 previewStatusText.text = "Preview: not loaded"
                 previewImage.setImageDrawable(null)
                 previewImage.visibility = View.GONE
@@ -223,6 +278,10 @@ class MainActivity : AppCompatActivity() {
         content.addView(previewButton)
         content.addView(intervalLabel)
         content.addView(intervalButtons)
+        content.addView(transitionLabel)
+        content.addView(transitionHint)
+        content.addView(transitionBulkButtons)
+        content.addView(transitionButtons)
         content.addView(clearButton)
 
         root.addView(content)
@@ -239,18 +298,28 @@ class MainActivity : AppCompatActivity() {
         }
 
         statusText.text = "Selected albums: ${settings.selectedAlbumIds.size}"
-        playbackSettingsText.text = "Playback: ${if (settings.shuffle) "random order" else "fixed order"} | Change every ${settings.intervalSeconds} seconds"
+        val transitionSummary = settings.enabledTransitions
+            .sortedBy { it.displayName }
+            .joinToString { it.displayName }
+        playbackSettingsText.text = "Playback: ${if (settings.shuffle) "random order" else "fixed order"} | Change every ${settings.intervalSeconds} seconds | Transitions: $transitionSummary"
         shuffleCheckBox.isChecked = settings.shuffle
+        restoreTransitionSelectionState(settings.enabledTransitions)
 
         restoreImmichAlbumSelectionState()
     }
 
     private fun saveImmichSettings(): Boolean {
-        val serverUrl = immichServerUrlInput.text?.toString().orEmpty().trim().trimEnd('/')
+        val serverUrlInput = immichServerUrlInput.text?.toString().orEmpty()
+        val serverUrl = normalizeServerUrl(serverUrlInput)
         val apiKey = immichApiKeyInput.text?.toString().orEmpty().trim()
 
-        if (serverUrl.isBlank() || apiKey.isBlank()) {
-            immichStatusText.text = "Immich: server URL and API key are required"
+        if (serverUrl == null) {
+            immichStatusText.text = "Immich: enter a valid server URL (http:// or https://)"
+            return false
+        }
+
+        if (apiKey.isBlank()) {
+            immichStatusText.text = "Immich: API key is required"
             return false
         }
 
@@ -258,8 +327,64 @@ class MainActivity : AppCompatActivity() {
             context = this,
             config = ImmichAuthConfig(serverUrl = serverUrl, apiKey = apiKey)
         )
+        immichServerUrlInput.setText(serverUrl)
         immichStatusText.text = "Immich: settings saved"
         return true
+    }
+
+    private fun normalizeServerUrl(raw: String): String? {
+        val trimmed = raw.trim().trimEnd('/')
+        if (trimmed.isBlank()) {
+            return null
+        }
+
+        val withScheme = if (
+            trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            trimmed
+        } else {
+            "http://$trimmed"
+        }
+
+        val parsed = runCatching { java.net.URI(withScheme) }.getOrNull() ?: return null
+        val scheme = parsed.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") {
+            return null
+        }
+
+        if (parsed.host.isNullOrBlank()) {
+            return null
+        }
+
+        val basePath = parsed.path
+            .orEmpty()
+            .trim()
+            .trimEnd('/')
+            .let { path ->
+                when {
+                    path.endsWith("/auth/login", ignoreCase = true) -> {
+                        path.removeSuffix("/auth/login")
+                    }
+                    path.endsWith("/login", ignoreCase = true) -> {
+                        path.removeSuffix("/login")
+                    }
+                    else -> path
+                }
+            }
+            .let { if (it.isBlank() || it == "/") "" else it }
+
+        return runCatching {
+            java.net.URI(
+                scheme,
+                null,
+                parsed.host,
+                parsed.port,
+                if (basePath.isBlank()) null else basePath,
+                null,
+                null
+            ).toString().trimEnd('/')
+        }.getOrNull()
     }
 
     private fun testImmichConnection() {
@@ -269,11 +394,21 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             immichStatusText.text = "Immich: testing connection..."
-            val reachable = immichRepository.isConfiguredAndReachable(this@MainActivity)
-            immichStatusText.text = if (reachable) {
+            val result = immichRepository.testConnection(this@MainActivity)
+            if (result.success && !result.resolvedServerUrl.isNullOrBlank()) {
+                val current = ImmichSettingsStore.loadAuthConfig(this@MainActivity)
+                if (current != null && current.serverUrl != result.resolvedServerUrl) {
+                    ImmichSettingsStore.saveAuthConfig(
+                        context = this@MainActivity,
+                        config = current.copy(serverUrl = result.resolvedServerUrl)
+                    )
+                    immichServerUrlInput.setText(result.resolvedServerUrl)
+                }
+            }
+            immichStatusText.text = if (result.success) {
                 "Immich: connection successful"
             } else {
-                "Immich: connection failed"
+                "Immich: connection failed (${result.message})"
             }
         }
     }
@@ -285,11 +420,24 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             immichStatusText.text = "Immich: loading albums..."
-            val albums = immichRepository.fetchAlbums(this@MainActivity)
+            val result = immichRepository.fetchAlbumsDetailed(this@MainActivity)
+            val albums = result.albums
+
+            if (!result.resolvedServerUrl.isNullOrBlank()) {
+                val current = ImmichSettingsStore.loadAuthConfig(this@MainActivity)
+                if (current != null && current.serverUrl != result.resolvedServerUrl) {
+                    ImmichSettingsStore.saveAuthConfig(
+                        context = this@MainActivity,
+                        config = current.copy(serverUrl = result.resolvedServerUrl)
+                    )
+                    immichServerUrlInput.setText(result.resolvedServerUrl)
+                }
+            }
+
             renderImmichAlbumPicker(albums)
 
             immichStatusText.text = if (albums.isEmpty()) {
-                "Immich: no albums found"
+                "Immich: no albums found (${result.message ?: "unknown reason"})"
             } else {
                 "Immich: loaded ${albums.size} album(s)"
             }
@@ -315,6 +463,9 @@ class MainActivity : AppCompatActivity() {
                 text = "${album.albumName} (${album.assetCount})"
                 isChecked = selected.contains(album.id)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setOnCheckedChangeListener { _, _ ->
+                    persistSelectedImmichAlbums(showStatus = true)
+                }
             }
             immichAlbumCheckboxes[album.id] = checkbox
             immichAlbumListContainer.addView(checkbox)
@@ -333,6 +484,82 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveSelectedImmichAlbums() {
+        persistSelectedImmichAlbums(showStatus = true)
+        refreshStatus()
+    }
+
+    private fun restoreTransitionSelectionState(selectedModes: Set<SlideshowTransitionMode>) {
+        if (transitionModeCheckboxes.isEmpty()) {
+            return
+        }
+
+        transitionModeCheckboxes.forEach { (mode, checkbox) ->
+            checkbox.setOnCheckedChangeListener(null)
+            checkbox.isChecked = selectedModes.contains(mode)
+            checkbox.setOnCheckedChangeListener { _, _ ->
+                persistSelectedTransitions(showStatus = true)
+            }
+        }
+    }
+
+    private fun persistSelectedTransitions(showStatus: Boolean) {
+        val enabledTransitions = transitionModeCheckboxes
+            .filterValues { it.isChecked }
+            .keys
+            .ifEmpty { setOf(SlideshowTransitionMode.CROSSFADE) }
+
+        if (transitionModeCheckboxes.values.none { it.isChecked }) {
+            transitionModeCheckboxes[SlideshowTransitionMode.CROSSFADE]?.apply {
+                setOnCheckedChangeListener(null)
+                isChecked = true
+                setOnCheckedChangeListener { _, _ ->
+                    persistSelectedTransitions(showStatus = true)
+                }
+            }
+        }
+
+        val existing = ImmichSettingsStore.loadSlideshowSettings(this)
+        ImmichSettingsStore.saveSlideshowSettings(
+            context = this,
+            settings = existing.copy(
+                enabledTransitions = enabledTransitions,
+                shuffle = shuffleCheckBox.isChecked
+            )
+        )
+
+        if (showStatus) {
+            immichStatusText.text = "Immich: saved ${enabledTransitions.size} transition(s)"
+        }
+    }
+
+    private fun selectAllTransitions() {
+        transitionModeCheckboxes.values.forEach { checkbox ->
+            checkbox.setOnCheckedChangeListener(null)
+            checkbox.isChecked = true
+            checkbox.setOnCheckedChangeListener { _, _ ->
+                persistSelectedTransitions(showStatus = true)
+            }
+        }
+
+        persistSelectedTransitions(showStatus = true)
+        refreshStatus()
+    }
+
+    private fun clearAllTransitions() {
+        transitionModeCheckboxes.values.forEach { checkbox ->
+            checkbox.setOnCheckedChangeListener(null)
+            checkbox.isChecked = false
+            checkbox.setOnCheckedChangeListener { _, _ ->
+                persistSelectedTransitions(showStatus = true)
+            }
+        }
+
+        persistSelectedTransitions(showStatus = true)
+        immichStatusText.text = "Immich: cleared transitions (Crossfade kept as default)"
+        refreshStatus()
+    }
+
+    private fun persistSelectedImmichAlbums(showStatus: Boolean) {
         val selectedIds = immichAlbumCheckboxes
             .filterValues { it.isChecked }
             .keys
@@ -347,8 +574,9 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
-        immichStatusText.text = "Immich: saved ${selectedIds.size} selected album(s)"
-        refreshStatus()
+        if (showStatus) {
+            immichStatusText.text = "Immich: saved ${selectedIds.size} selected album(s)"
+        }
     }
 
     private fun previewSelectedImmichSource() {
@@ -378,7 +606,14 @@ class MainActivity : AppCompatActivity() {
 
             previewStatusText.text = "Preview: loaded ${urls.size} photo(s), showing first"
             previewImage.visibility = View.VISIBLE
-            previewImage.load(firstUrl)
+            val apiKey = ImmichSettingsStore.loadAuthConfig(this@MainActivity)?.apiKey.orEmpty()
+            if (apiKey.isNotBlank()) {
+                previewImage.load(firstUrl) {
+                    addHeader("x-api-key", apiKey)
+                }
+            } else {
+                previewImage.load(firstUrl)
+            }
         }
     }
 
