@@ -1,0 +1,369 @@
+# Google Photos Album Screensaver for Android TV
+
+Version 1.0
+
+## Project Goal
+
+Create a free Android TV screensaver application for personal use that displays photos from one or more Google Photos albums with intelligent layouts, advanced transitions, and smooth playback.
+
+The application should provide a significantly better experience than the built-in Google TV Ambient Mode by giving complete control over album selection, timing, transitions, and portrait photo presentation.
+
+---
+
+# Supported Platforms
+
+## Initial Target
+
+* Sony Android TV
+
+## Future Targets
+
+* Chromecast with Google TV
+* NVIDIA Shield
+* Other Android TV devices
+
+---
+
+# User Authentication
+
+## Requirements
+
+* User signs in using Google OAuth.
+* Application requests access to Google Photos albums.
+* Login credentials are securely stored.
+* User remains signed in indefinitely.
+* Re-authentication should only occur if Google invalidates the token.
+
+## Out of Scope
+
+* Multiple Google accounts
+* Guest accounts
+
+---
+
+# Album Selection
+
+## Requirements
+
+The user must be able to:
+
+* Browse all Google Photos albums.
+* Select one or more albums.
+* Enable or disable albums at any time.
+* View album names and photo counts.
+
+## Playback Behavior
+
+Photos from all selected albums shall be:
+
+* Mixed together into a single slideshow.
+* Randomized.
+* Continuously shuffled.
+
+No album priority system is required.
+
+---
+
+# Slideshow Controls
+
+## Photo Duration
+
+User-configurable display time.
+
+Supported values:
+
+* 2 seconds
+* 3 seconds
+* 5 seconds
+* 10 seconds
+* 15 seconds
+* 30 seconds
+* Custom value
+
+Default:
+
+* 10 seconds
+
+---
+
+# Transition System
+
+## Requirements
+
+Every image change shall use a transition effect.
+
+Supported transitions:
+
+* Fade
+* Crossfade
+* Dissolve
+* Zoom In
+* Zoom Out
+* Ken Burns
+* Slide Left
+* Slide Right
+* Slide Up
+* Slide Down
+* Flip
+* Rotate
+* Push
+* Scale
+* Blur Fade
+
+## Selection Mode
+
+Transitions are automatically selected at random.
+
+The user does not configure transitions individually.
+
+The system should avoid repeating the same transition multiple times in succession.
+
+---
+
+# Image Layout Engine
+
+## Objective
+
+Use the full TV screen effectively regardless of image orientation.
+
+---
+
+## Landscape Photos
+
+Landscape photos should:
+
+* Fill the screen whenever possible.
+* Use AI-assisted smart cropping.
+* Preserve important image subjects.
+* Avoid cropping faces.
+
+---
+
+## Portrait Photos
+
+Portrait photos shall not simply appear centered with large black bars.
+
+The application should intelligently choose one of the following layouts:
+
+### Two-Up Layout
+
+Display:
+
+* Two portrait images side-by-side.
+
+### Three-Up Layout
+
+Display:
+
+* Three portrait images together.
+
+### Four-Up Layout
+
+Display:
+
+* Four portrait images in a collage.
+
+The selection should be automatic.
+
+---
+
+## Background Fill
+
+When portrait photos are displayed:
+
+* Create a blurred version of one of the displayed photos.
+* Fill the entire screen background.
+* Overlay the portrait images on top.
+
+This eliminates black bars and unused screen space.
+
+---
+
+# Smart Image Grouping
+
+## Requirements
+
+The system should analyze photo dimensions and orientation.
+
+Examples:
+
+### Portrait + Portrait
+
+Use side-by-side layout.
+
+### Portrait + Portrait + Portrait
+
+Use three-image collage.
+
+### Portrait + Portrait + Portrait + Portrait
+
+Use four-image collage.
+
+### Panorama
+
+Display full-width with subtle pan animation.
+
+---
+
+# Smart Cropping
+
+## Requirements
+
+Use AI-assisted subject detection.
+
+Cropping priority:
+
+1. Faces
+2. People
+3. Pets
+4. Main subject
+5. Background scenery
+
+The crop engine should avoid:
+
+* Cutting off faces
+* Cutting off heads
+* Removing key subjects
+
+---
+
+# Playback Randomization
+
+## Requirements
+
+Photos should appear random.
+
+The same image should not reappear frequently.
+
+The application should maintain a recently-shown list.
+
+Default:
+
+* Do not repeat any image until at least 100 other images have been displayed.
+
+If fewer than 100 images exist:
+
+* Avoid immediate repeats.
+
+---
+
+# Performance Requirements
+
+## Goal
+
+Smooth playback with no visible lag.
+
+---
+
+## Image Prefetching
+
+The system shall:
+
+* Download upcoming images in advance.
+* Keep a small rolling cache.
+
+Example:
+
+* Previous 5 photos
+* Current photo
+* Next 10 photos
+
+---
+
+## Storage Management
+
+Because Android TVs have limited storage:
+
+* Cache size should be limited.
+* Older cached photos should be automatically deleted.
+* Storage usage should remain under 250 MB.
+
+The cache shall operate as a rolling buffer.
+
+---
+
+# Screen Saver Integration
+
+## Requirements
+
+The application shall:
+
+* Register as an Android TV screensaver.
+* Appear in Android TV screen saver settings.
+* Launch automatically after inactivity.
+* Exit immediately when the remote is touched.
+
+---
+
+# Settings Screen
+
+## User Settings
+
+### Albums
+
+* Album selection
+
+### Timing
+
+* Seconds per photo
+
+### Layout
+
+* Enable Smart Portrait Grouping
+
+### Display
+
+* Smart Crop On/Off
+
+### Cache
+
+* Clear cache
+
+---
+
+# Error Handling
+
+## Offline Mode
+
+If internet connectivity is lost:
+
+* Continue displaying cached images.
+* Retry background synchronization.
+
+## Album Access Failure
+
+If Google Photos access fails:
+
+* Notify the user.
+* Prompt for reauthentication.
+
+---
+
+# Non-Functional Requirements
+
+## Startup
+
+Screen saver should start in less than 2 seconds.
+
+## Transition Performance
+
+60 FPS on Sony Android TV hardware.
+
+## Memory Usage
+
+Keep memory footprint below 200 MB.
+
+## Reliability
+
+Must run unattended for weeks without crashing.
+
+---
+
+# Future Enhancements
+
+* Clock overlay
+* Weather overlay
+* Family calendar overlay
+* AI-generated themed playlists
+* Seasonal photo collections
+* Shared family albums

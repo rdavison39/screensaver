@@ -162,7 +162,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(6), 0, dp(6))
         }
 
-        listOf(5, 8, 11, 15, 20).forEach { seconds ->
+        listOf(2, 3, 5, 10, 15, 30).forEach { seconds ->
             val button = Button(this).apply {
                 text = "${seconds}s"
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -172,6 +172,35 @@ class MainActivity : AppCompatActivity() {
             }
             intervalButtons.addView(button)
         }
+
+        val customIntervalRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(4), 0, dp(4))
+        }
+
+        val customIntervalInput = EditText(this).apply {
+            hint = "Custom seconds"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            isSingleLine = true
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
+        }
+
+        val setCustomIntervalButton = Button(this).apply {
+            text = "Set"
+            setOnClickListener {
+                val customSeconds = customIntervalInput.text?.toString()?.toIntOrNull()
+                if (customSeconds == null || customSeconds < 2 || customSeconds > 120) {
+                    immichStatusText.text = "Immich: enter a valid interval between 2 and 120 seconds"
+                } else {
+                    setSlideshowIntervalSeconds(customSeconds)
+                }
+            }
+        }
+
+        customIntervalRow.addView(customIntervalInput)
+        customIntervalRow.addView(setCustomIntervalButton)
 
         val transitionLabel = TextView(this).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -278,6 +307,7 @@ class MainActivity : AppCompatActivity() {
         content.addView(previewButton)
         content.addView(intervalLabel)
         content.addView(intervalButtons)
+        content.addView(customIntervalRow)
         content.addView(transitionLabel)
         content.addView(transitionHint)
         content.addView(transitionBulkButtons)

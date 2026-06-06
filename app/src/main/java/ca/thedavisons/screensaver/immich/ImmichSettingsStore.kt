@@ -52,7 +52,7 @@ object ImmichSettingsStore {
             .edit()
             .putString(KEY_SELECTED_ALBUM_IDS, serializedAlbums)
             .putBoolean(KEY_SHUFFLE, settings.shuffle)
-            .putInt(KEY_INTERVAL_SECONDS, settings.intervalSeconds.coerceIn(3, 120))
+            .putInt(KEY_INTERVAL_SECONDS, settings.intervalSeconds.coerceIn(2, 120))
             .putString(
                 KEY_TRANSITION_MODES,
                 settings.enabledTransitions
@@ -91,7 +91,7 @@ object ImmichSettingsStore {
         return ImmichSlideshowSettings(
             selectedAlbumIds = selected,
             shuffle = prefs.getBoolean(KEY_SHUFFLE, true),
-            intervalSeconds = prefs.getInt(KEY_INTERVAL_SECONDS, 20).coerceIn(3, 120),
+            intervalSeconds = prefs.getInt(KEY_INTERVAL_SECONDS, 10).coerceIn(2, 120),
             enabledTransitions = enabledTransitions
         )
     }

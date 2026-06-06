@@ -13,3 +13,7 @@ adb connect 192.168.0.33:5555  (the tv might ask you to allow )
 this app now uses Immich only.
 configure your Immich server URL and API key in the setup screen,
 load albums, select one or more albums, then save your slideshow settings.
+
+Requirements
+
+i am writing a screen saver for android TV - i want to be able to login to my google account a pick an album (or albums). I want to be able to control how long it pauses on each photo

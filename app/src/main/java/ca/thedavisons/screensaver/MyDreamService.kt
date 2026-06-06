@@ -49,6 +49,9 @@ class MyDreamService : DreamService() {
     private var currentImageIndex = 0
     @Volatile
     private var indexedImageUrls: List<String> = emptyList()
+    private val recentRemoteImageUrls = ArrayDeque<String>()
+    private var lastTransitionMode: SlideshowTransitionMode? = null
+    private val slideshowRandom = Random(System.currentTimeMillis())
     @Volatile
     private var fallbackReason: String = "Loading Immich photos..."
     private var lastLatestSyncTimeMs = 0L
@@ -73,12 +76,7 @@ class MyDreamService : DreamService() {
 
                 if (activeRemoteImages.isNotEmpty()) {
                     fallbackBanner.visibility = View.GONE
-                    val imageUrl = activeRemoteImages[currentImageIndex % activeRemoteImages.size]
-                    val companionUrl = if (activeRemoteImages.size > 1) {
-                        activeRemoteImages[(currentImageIndex + 1) % activeRemoteImages.size]
-                    } else {
-                        null
-                    }
+                    val (imageUrl, companionUrl) = pickNextRemoteImageUrls(activeRemoteImages)
                     val fallbackResId = fallbackImages[currentImageIndex % fallbackImages.size]
                     val apiKey = ImmichSettingsStore.loadAuthConfig(this@MyDreamService)?.apiKey.orEmpty()
                     displayRemoteImageWithTransition(
@@ -301,7 +299,13 @@ class MyDreamService : DreamService() {
         val enabledTransitions = ImmichSettingsStore.loadSlideshowSettings(this).enabledTransitions
             .ifEmpty { SlideshowTransitionMode.values().toSet() }
 
-        return enabledTransitions.random()
+        val candidates = enabledTransitions
+            .filter { it != lastTransitionMode }
+            .ifEmpty { enabledTransitions.toList() }
+
+        val chosen = candidates.random(slideshowRandom)
+        lastTransitionMode = chosen
+        return chosen
     }
 
     private fun displayRemoteImageWithTransition(
@@ -713,6 +717,23 @@ class MyDreamService : DreamService() {
             .setDuration(durationMs.coerceAtLeast(1000L))
             .setInterpolator(LinearInterpolator())
             .start()
+    }
+
+    private fun pickNextRemoteImageUrls(remoteUrls: List<String>): Pair<String, String?> {
+        val availableUrls = remoteUrls.filter { !recentRemoteImageUrls.contains(it) }
+        val candidateUrls = if (availableUrls.isNotEmpty()) availableUrls else remoteUrls
+        val selectedUrl = candidateUrls.random(slideshowRandom)
+        if (recentRemoteImageUrls.size >= 100) {
+            recentRemoteImageUrls.removeFirst()
+        }
+        recentRemoteImageUrls.addLast(selectedUrl)
+
+        val companionUrl = remoteUrls
+            .filter { it != selectedUrl }
+            .takeIf { it.isNotEmpty() }
+            ?.randomOrNull(slideshowRandom)
+
+        return selectedUrl to companionUrl
     }
 
     private fun dp(value: Int): Int {
